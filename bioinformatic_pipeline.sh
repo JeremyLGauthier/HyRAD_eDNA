@@ -1,7 +1,6 @@
 #!/bin/bash -       
 #title           :bioinformatic_pipeline
 #description     :This script contains all command used for the HyRAD eDNA Frogs paper
-#author		 : Jérémy Gauthier and Laura Benestan
 #date            :01.06.2024
 
 #==============================================================================
