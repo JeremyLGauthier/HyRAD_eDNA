@@ -69,31 +69,15 @@ for i in `ls *_rg_realign.bam`
 	awk '{if ($3 >= 20) print $0}' "$i"_bedcov_sup1 | grep -c "." > count_cov20
 	done
 
+#ddRAD loci reconstruction
 
-#Venn diagrams
-awk '{print $1}' list_samples | sort | uniq > list_condi
-while read a 
+for i in `ls *_realign.bam`
 	do
-	awk '{if ($1 == "'$a'") print $2}' list_samples > temp_list_s
-	S1=`cat temp_list_s | tr '\n' '\t' | awk '{print $1}'`
-	S2=`cat temp_list_s | tr '\n' '\t' | awk '{print $2}'`
-	S3=`cat temp_list_s | tr '\n' '\t' | awk '{print $3}'`
-	echo $a
-	Rscript ./Venn_plot_simple.R "$S1" "$S2" "$S3"
-	mv venn_diagramm.png "$a"_venn_diagramm.png
-	done < list_condi
-
-#Rscript
-library(VennDiagram)
-
-args <- commandArgs(trailingOnly = TRUE)
-
-A<-read.table(args[1],h=F,sep="\t")
-B<-read.table(args[2],h=F,sep="\t")
-C<-read.table(args[3],h=F,sep="\t")
-
-venn.diagram(x = list(A$V1, B$V1, C$V1), category.names = c("Set 1" , "Set 2 " , "Set 3"), filename = 'venn_diagramm.png', output=TRUE)
-
+	bedtools bamtobed -i "$i" > "$i".bed
+	bedtools cluster -d 500 -i "$i".bed > "$i".clustered
+	echo $i >> output_loci 
+	cut -f 4 "$i".clustered | sort | uniq | wc -l >> output_loci 
+	done
 
 
 #SNP calling
@@ -110,152 +94,41 @@ gatk HaplotypeCaller -R GCF_905171775.1_aRanTem1.1_genomic_cut.fna -O gatk4_call
 
 #SNP filters and Structure format
 
-##eDNA
-vcftools --vcf gatk4_calling.vcf --keep list_eDNA --maf 0.2 --max-missing 0.6 --recode --out eDNA_maf02_miss06_gatk4_calling
-
-##Individuals
-vcftools --vcf gatk4_calling.vcf --keep list_indiv --maf 0.15 --max-missing 0.6 --recode --out Indiv_maf015_miss06_gatk4_calling
+vcftools --vcf gatk4_calling.vcf --remove-indels --min-alleles 2 --max-alleles 2 --keep list_indiv --maf 0.05 --max-missing 0.8 --recode --out snp_bi_miss08_maf005_gatk4
 
 ##Conversion in .str
-vcf2structure_gn.sh eDNA_maf02_miss06_gatk4_calling
+vcf2structure_gn.sh snp_bi_miss08_maf005_gatk4.recode.vcf
 
 
-#PCoA in R
+#PCA in R
+data<-read.structure("snp_bi_miss08_maf005_gatk4.recode.str",n.ind=108,n.loc=17617,onerowperind=FALSE,col.lab=1,col.pop=NULL,col.others=NULL,row.marknames=NULL,NA.char=-9,ask=F) 
+is.genind(data)
+sansna<-scaleGen(data,scale=F, NA.method="mean")
+pca1 <- dudi.pca(sansna,cent=F,scale=F,scannf=FALSE,nf=4)
+barplot(pca1$eig[1:20],main="PCA eigenvalues", col=heat.colors(20))
+s.class(pca1$li,xax=1,yax=2,pch=19)
+(pca1$eig/sum(pca1$eig))*100
 
-library(adegenet)
-library(ape)
-library(ggplot2)
-library(dartR)
-library(vcfR)
-library(dplyr)
-library(corrplot)
-
-## Import vcf
-vcf.pond <- read.vcfR("16721snps_4edna.recode.vcf")
-
-## Transform vcf to genind
-genlight.pond <- vcfR2genlight(vcf.pond)
-### Add pop info
-pop.pond <- read.table("edna-pond-pooled.txt", header=FALSE)
-colnames(pop.pond) <- c("SAMPLE","TYPE","POP")
-genlight.pond@pop <- as.factor(pop.pond$POP)
-
-### Make euclidean distance
-source("pcoa_function.R")
-pcoa.pond.graph <- pcoa.function(genlight.pond, pop.pond)
-pcoa.pond.graph
-
-## Import vcf
-vcf.aqua <- read.vcfR("207975snps_4aqua.recode.vcf")
-
-## Transform vcf to genind
-genlight.aqua <- vcfR2genlight(vcf.aqua)
-### Add pop info
-pop.aqua <- read.table("edna-aqua-pooled.txt", header=TRUE)
-colnames(pop.aqua) <- c("SAMPLE","TYPE","POP")
-genlight.aqua@pop <- as.factor(pop.aqua$POP)
-
-### Make euclidean distance
-pcoa.aqua.graph <- pcoa.function(genlight.aqua,pop.aqua)
-pcoa.aqua.graph
-
-## Import vcf
-vcf.ind <- read.vcfR("250739snps_76ind.recode.vcf")
-## Transform vcf to genind
-genlight.I <- vcfR2genlight(vcf.ind)
-
-### Add pop info
-pop.ind <- read.table("dna-76samples.txt", header=FALSE)
-colnames(pop.ind) <- c("SAMPLE","TYPE","POP")
-genlight.I@pop <- as.factor(pop.ind$POP)
-
-### Make PCoA
-pcoa.ind.graph <- pcoa.function(genlight.I,pop.ind)
-pcoa.ind.graph
-
-### Save the PCoA
-cowplot::plot_grid(pcoa.pond.graph,pcoa.aqua.graph, pcoa.ind.graph, nrow=1, labels=c("A","B","C"))
-
-### Remove the population 4
-genlight.I <- gl.compliance.check(genlight.I)
-genlight.I.3pop <- gl.drop.pop(genlight.I, pop.list = "4", mono.rm = TRUE)
-
-### Make PCoA on the 3 sampling location
-pcoa.ind.graph.3pop <- pcoa.function(genlight.I.3pop,pop.ind[1:57,])
-pcoa.ind.graph.3pop
+pca<-data.frame(pca1$l1)
+ggplot(data,aes(x=PC1, y=PC2)) +
+  geom_point(aes(color=pop, shape=type,size=1.1)) +
+  scale_shape_manual(values = c(22, 15, 24, 17, 20)) +
+  scale_color_manual(values = c("red","dodgerblue1","purple","orange"))+
+  theme_classic()
 
 
-#Venn
-library(VennDiagram)
-library(RColorBrewer)
+#Poolseq analyses
+samtools mpileup -B 1M_sorted_keep_rg_realign_rg.bam 2M_sorted_keep_rg_realign_rg.bam 3M_sorted_keep_rg_realign_rg.bam 4M_sorted_keep_rg_realign_rg.bam > 1M2M3M4M.mpileup
+perl mpileup2sync.pl --input 1M2M3M4M.mpileup --output 1M2M3M4M.sync --fastq-type sanger --min-qual 1
+perl fst-sliding.pl --input 1M2M3M4M.sync --output 1M2M3M4M.fst --suppress-noninformative --min-count 2 --min-coverage 20 --max-coverage 2000 --window-size 1 --step-size 1 --pool-size 40
 
-### Check the common SNPs based on list of list extract from the vcf
-set1 <- read.table("16721snps.txt")
-set2 <- read.table("207975snps.txt")
-set3 <- read.table("250739snps.txt")
-
-pos1 <- as.vector(paste(set1$V1, set1$V2, sep="_"))
-pos2 <- as.vector(paste(set2$V1, set2$V2, sep="_"))
-pos3 <- as.vector(paste(set3$V1, set3$V2, sep="_"))
-
-### Set colors that match the figure
-myCol <- c("green3", "blue4", "grey")
-
-# Chart
-venn.diagram.hyrad <- venn.diagram(
-  x = list(pos1, pos2, pos3),
-  category.names = c("Ponds" , "Aquarium " , "Individuals"),
-  filename = '#14_venn_diagramm.png',
-  output=TRUE,
+ggplot(data, aes(x = ddRAD , y = eDNA_Pond)) +
+  geom_point(size=3) +
+  stat_smooth(data=data, color = "grey", alpha=0.1, method= "lm") +
+  theme_classic() +
+  xlim(c(0,0.05)) +
+  ylim(c(0,0.05)) +
+  xlab("FST individual samples") + 
+  ylab("FST pond eDNA")
+  theme(axis.text=element_text(size=12))
   
-  # Output features
-  imagetype="png" ,
-  height = 480 , 
-  width = 480 , 
-  resolution = 300,
-  compression = "lzw",
-  
-  # Circles
-  lwd = 2,
-  lty = 'blank',
-  fill = myCol,
-  
-  # Numbers
-  cex = .4,
-  fontface = "bold",
-  fontfamily = "sans",
-  
-  # Set names
-  cat.cex = 0.4,
-  cat.fontface = "bold",
-  cat.default.pos = "outer",
-  cat.pos = c(-27, 27, 135),
-  cat.dist = c(0.055, 0.055, 0.085),
-  cat.fontfamily = "sans",
-  rotation = 1
-)
-overlap <- calculate.overlap(x=list("pond"=pos1,"aquarium" = pos2,"ind"=pos3))
-snps.all.samples <- as.data.frame(overlap[1])
-write.table(snps.all.samples, "1556snps.txt", quote=FALSE, row.names=FALSE)
-
-#### STEP 03: SUBSET ONLY SNPS IN COMMON ####
-
-### Set up the list of SNPs to keep for all samples
-loc.to.keep <- as.vector(snps.all.samples$a5)
-genlight_1556snps_pond <- gl.keep.loc(genlight.pond, loc.list = loc.to.keep)
-genlight_1556snps_aqua <- gl.keep.loc(genlight.aqua, loc.list = loc.to.keep)
-genlight_1556snps_ind <- gl.keep.loc(genlight.I, loc.list = loc.to.keep)
-
-### Make the PCoA on each genlight
-pcoa.pond.subset <- pcoa.function(genlight_1556snps_pond, pop.pond)
-pcoa.aqua.subset <- pcoa.function(genlight_1556snps_aqua, pop.aqua)
-pcoa.ind.subset <- pcoa.function(genlight_1556snps_ind,pop.ind)
-
-### Save the PCoA
-cowplot::plot_grid(pcoa.pond.subset,pcoa.aqua.subset, pcoa.ind.subset, nrow=1, labels=c("A","B","C"))
-
-ggsave("PCoA-all-subset.pdf", width=10, height=5)
-
-
-
-
